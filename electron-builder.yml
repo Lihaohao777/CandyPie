@@ -1,0 +1,16 @@
+appId: com.candypie.app
+productName: CandyPie
+directories:
+  output: dist
+win:
+  target: nsis
+  icon: assets/icon.png
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+files:
+  - dist/renderer/**
+  - src/main/**
+  - src/preload.js
+  - assets/**
+  - package.json
