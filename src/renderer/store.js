@@ -4,7 +4,8 @@ export const config = reactive({
   apiUrl: 'https://api.openai.com/v1',
   apiKey: '',
   modelName: 'gpt-3.5-turbo',
-  systemPrompt: ''
+  systemPrompt: '',
+  reasoningEnabled: false
 })
 
 export async function loadConfig() {

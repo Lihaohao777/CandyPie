@@ -45,7 +45,7 @@ function createWindow() {
   } else {
     win.loadFile(path.join(app.getAppPath(), 'dist/renderer/index.html'))
     win.once('ready-to-show', () => {
-      win.on('blur', () => win.hide())
+      win.on('blur', () => { if (!win.isAlwaysOnTop()) win.hide() })
     })
   }
 }
@@ -83,9 +83,10 @@ app.whenReady().then(() => {
   ipcMain.handle('config:load', () => loadConfig())
   ipcMain.handle('config:save', (_, data) => { saveConfig(data); return true })
   ipcMain.on('window:hide', () => win.hide())
+  ipcMain.on('window:alwaysOnTop', (_, flag) => win.setAlwaysOnTop(flag))
 
   ipcMain.on('chat:send', async (event, { message, config, history = [] }) => {
-    const { apiUrl, apiKey, modelName, systemPrompt } = config
+    const { apiUrl, apiKey, modelName, systemPrompt, reasoningEnabled } = config
     try {
       const res = await fetch(`${apiUrl}/chat/completions`, {
         method: 'POST',
@@ -93,6 +94,7 @@ app.whenReady().then(() => {
         body: JSON.stringify({
           model: modelName || 'gpt-3.5-turbo',
           stream: true,
+          ...(reasoningEnabled === false ? { reasoning_effort: 'none' } : {}),
           messages: [
             ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
             ...history,

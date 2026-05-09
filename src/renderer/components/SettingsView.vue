@@ -14,6 +14,12 @@
       <label>Model
         <input v-model="config.modelName" placeholder="gpt-3.5-turbo" />
       </label>
+      <div class="toggle-label">
+        <span>Enable Reasoning</span>
+        <div class="toggle" :class="{ on: config.reasoningEnabled }" @click="config.reasoningEnabled = !config.reasoningEnabled">
+          <div class="thumb" />
+        </div>
+      </div>
       <label>System Prompt
         <textarea v-model="config.systemPrompt" rows="8" placeholder="You are a helpful assistant." />
       </label>
@@ -48,4 +54,9 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color:
 input, textarea { background: #313244; border: none; border-radius: 6px; color: #cdd6f4; padding: 8px; font-size: 13px; outline: none; resize: none; }
 .save-btn { background: #89b4fa; border: none; border-radius: 6px; color: #1e1e2e; cursor: pointer; font-weight: 600; padding: 8px; font-size: 13px; }
 .saved-msg { color: #a6e3a1; font-size: 12px; text-align: center; }
+.toggle-label { display: flex; flex-direction: row; align-items: center; justify-content: space-between; color: #cdd6f4; font-size: 13px; }
+.toggle { width: 36px; height: 20px; border-radius: 10px; background: #45475a; cursor: pointer; position: relative; transition: background 0.2s; flex-shrink: 0; }
+.toggle.on { background: #89b4fa; }
+.thumb { width: 14px; height: 14px; border-radius: 50%; background: #fff; position: absolute; top: 3px; left: 3px; transition: left 0.2s; }
+.toggle.on .thumb { left: 19px; }
 </style>

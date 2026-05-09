@@ -12,5 +12,6 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.removeAllListeners('chat:done')
     ipcRenderer.removeAllListeners('chat:error')
   },
-  hideWindow: () => ipcRenderer.send('window:hide')
+  hideWindow: () => ipcRenderer.send('window:hide'),
+  setAlwaysOnTop: (flag) => ipcRenderer.send('window:alwaysOnTop', flag)
 })
