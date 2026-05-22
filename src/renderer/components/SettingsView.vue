@@ -23,24 +23,50 @@
       <label>System Prompt
         <textarea v-model="config.systemPrompt" rows="8" placeholder="You are a helpful assistant." />
       </label>
-      <button class="save-btn" @click="save">Save</button>
-      <span v-if="saved" class="saved-msg">Saved!</span>
+      <button class="save-btn" @click="save" :disabled="saving">{{ saving ? 'Saving...' : 'Save' }}</button>
+      <div v-if="statusMessage" class="status-msg">{{ statusMessage }}</div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { config, saveConfig } from '../store.js'
 
 defineEmits(['back'])
 
-const saved = ref(false)
+const saving = ref(false)
+const statusMessage = ref('')
+
+function settingsSnapshot() {
+  return JSON.stringify({
+    apiUrl: config.apiUrl,
+    apiKey: config.apiKey,
+    modelName: config.modelName,
+    reasoningEnabled: config.reasoningEnabled,
+    systemPrompt: config.systemPrompt
+  })
+}
+
+const lastSavedSnapshot = ref(settingsSnapshot())
+const hasChanges = computed(() => settingsSnapshot() !== lastSavedSnapshot.value)
 
 async function save() {
-  await saveConfig()
-  saved.value = true
-  setTimeout(() => saved.value = false, 1500)
+  if (saving.value) return
+  const changed = hasChanges.value
+  saving.value = true
+  try {
+    await saveConfig()
+    lastSavedSnapshot.value = settingsSnapshot()
+    statusMessage.value = changed
+      ? 'Settings saved. New chats will use these settings.'
+      : 'No setting changes to save.'
+  } catch (e) {
+    statusMessage.value = `Save failed: ${e.message}`
+  } finally {
+    saving.value = false
+  }
+  setTimeout(() => { statusMessage.value = '' }, 2200)
 }
 </script>
 
@@ -53,7 +79,8 @@ async function save() {
 label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #a6adc8; }
 input, textarea { background: #313244; border: none; border-radius: 6px; color: #cdd6f4; padding: 8px; font-size: 13px; outline: none; resize: none; }
 .save-btn { background: #89b4fa; border: none; border-radius: 6px; color: #1e1e2e; cursor: pointer; font-weight: 600; padding: 8px; font-size: 13px; }
-.saved-msg { color: #a6e3a1; font-size: 12px; text-align: center; }
+.save-btn:disabled { opacity: 0.65; cursor: wait; }
+.status-msg { border: 1px solid #45475a; border-radius: 6px; background: #313244; color: #a6e3a1; font-size: 12px; line-height: 1.4; padding: 8px; text-align: center; }
 .toggle-label { display: flex; flex-direction: row; align-items: center; justify-content: space-between; color: #cdd6f4; font-size: 13px; }
 .toggle { width: 36px; height: 20px; border-radius: 10px; background: #45475a; cursor: pointer; position: relative; transition: background 0.2s; flex-shrink: 0; }
 .toggle.on { background: #89b4fa; }

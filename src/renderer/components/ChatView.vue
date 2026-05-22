@@ -12,31 +12,42 @@
       </div>
     </div>
 
-    <div class="messages" ref="messagesEl" @click="onMessagesClick">
-      <div v-for="(msg, i) in messages" :key="i" :class="['msg', msg.role]">
-        <template v-if="msg.role === 'assistant'">
-          <details v-if="parseMsg(msg.rawContent||msg.content).think" class="think-block">
-            <summary>Thinking...</summary>
-            <div class="think-content" v-html="renderMd(parseMsg(msg.rawContent||msg.content).think)" />
-          </details>
-          <div class="msg-content" v-html="renderMd(parseMsg(msg.rawContent||msg.content).reply)" />
-          <button class="copy-btn" @click="copyMsg(msg.rawContent||msg.content, i)">{{ copiedIdx === i ? '✓ Copied' : '⎘' }}</button>
-        </template>
-        <div v-else class="msg-content user-content">
-          <img v-if="msg.image" :src="msg.image" class="msg-image" />
-          <span v-if="msg.content" v-html="escapeHtml(msg.content)" />
+    <div class="messages-wrap">
+      <div
+        class="messages"
+        :class="{ 'scrollbar-hover': scrollbarHover }"
+        ref="messagesEl"
+        @scroll="onMessagesScroll"
+        @mousemove="onMessagesMouseMove"
+        @mouseleave="scrollbarHover = false"
+        @click="onMessagesClick"
+      >
+        <div v-for="(msg, i) in messages" :key="i" :class="['msg', msg.role]">
+          <template v-if="msg.role === 'assistant'">
+            <details v-if="parseMsg(msg.rawContent||msg.content).think" class="think-block">
+              <summary>Thinking...</summary>
+              <div class="think-content" v-html="renderMd(parseMsg(msg.rawContent||msg.content).think)" />
+            </details>
+            <div class="msg-content" v-html="renderMd(parseMsg(msg.rawContent||msg.content).reply)" />
+            <button class="copy-btn" @click="copyMsg(msg.rawContent||msg.content, i)">{{ copiedIdx === i ? '✓ Copied' : '⎘' }}</button>
+          </template>
+          <div v-else class="msg-content user-content">
+            <img v-if="msg.image" :src="msg.image" class="msg-image" />
+            <span v-if="msg.content" v-html="escapeHtml(msg.content)" />
+          </div>
+        </div>
+        <div v-if="streaming" class="msg assistant">
+          <div v-if="!streamBuffer" class="loading-dots"><span/><span/><span/></div>
+          <template v-else>
+            <details v-if="parseMsg(streamBuffer).think" class="think-block">
+              <summary>Thinking...</summary>
+              <div class="think-content" v-html="renderMd(parseMsg(streamBuffer).think)" />
+            </details>
+            <div class="msg-content" v-html="renderMd(parseMsg(streamBuffer).reply)" />
+          </template>
         </div>
       </div>
-      <div v-if="streaming" class="msg assistant">
-        <div v-if="!streamBuffer" class="loading-dots"><span/><span/><span/></div>
-        <template v-else>
-          <details v-if="parseMsg(streamBuffer).think" class="think-block">
-            <summary>Thinking...</summary>
-            <div class="think-content" v-html="renderMd(parseMsg(streamBuffer).think)" />
-          </details>
-          <div class="msg-content" v-html="renderMd(parseMsg(streamBuffer).reply)" />
-        </template>
-      </div>
+      <button v-if="showScrollBottom" class="scroll-bottom-btn" @click="scrollToBottom">↓ Bottom</button>
     </div>
 
     <div class="input-row">
@@ -50,11 +61,18 @@
           v-model="input"
           placeholder="Ask anything... (Enter to send, Shift+Enter for newline)"
           @keydown.enter.exact.prevent="send"
+          @keydown.up.exact.prevent="showPreviousAsk"
+          @keydown.down.exact.prevent="showNextAsk"
           @paste="onPaste"
           rows="3"
         />
       </div>
-      <button class="send-btn" @click="send" :disabled="streaming || (!input.trim() && !pastedImage)">Send</button>
+      <button
+        class="send-btn"
+        :class="{ streaming, stopping }"
+        @click="streaming ? stop() : send()"
+        :disabled="!streaming && !input.trim() && !pastedImage"
+      >{{ streaming ? (stopping ? 'Stopping...' : 'Stop') : 'Send' }}</button>
     </div>
   </div>
 </template>
@@ -62,10 +80,8 @@
 <script setup>
 import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { marked } from 'marked'
-import markedKatex from 'marked-katex-extension'
+import katex from 'katex'
 import { config } from '../store.js'
-
-marked.use(markedKatex({ throwOnError: false }))
 
 const props = defineProps({ messages: Array })
 const emit = defineEmits(['settings', 'clear', 'update:messages'])
@@ -78,6 +94,13 @@ const inputEl = ref(null)
 const copiedIdx = ref(null)
 const pinned = ref(false)
 const pastedImage = ref(null)
+const stopping = ref(false)
+const showScrollBottom = ref(false)
+const activeMessagesBase = ref(null)
+const scrollbarHover = ref(false)
+const askHistory = ref([])
+const askHistoryCursor = ref(-1)
+const askHistoryDraft = ref('')
 
 function togglePin() {
   pinned.value = !pinned.value
@@ -95,19 +118,24 @@ function onPaste(e) {
 
 onMounted(() => {
   inputEl.value?.focus()
-  window.api.onChunk((text) => { streamBuffer.value += text; scrollBottom() })
-  // store rawContent on assistant messages for history
-  window.api.onDone(() => {
-    const raw = streamBuffer.value
-    emit('update:messages', [...props.messages, { role: 'assistant', content: parseMsg(raw).reply, rawContent: raw }])
-    streamBuffer.value = ''
-    streaming.value = false
-    scrollBottom()
+  window.api.onChunk((text) => {
+    if (!streaming.value) return
+    const shouldStick = isNearBottom()
+    streamBuffer.value += text
+    if (shouldStick) scrollToBottom()
+    else nextTick(updateScrollState)
   })
+  // store rawContent on assistant messages for history
+  window.api.onDone(() => finishStream())
+  window.api.onStopped(() => finishStream())
   window.api.onError((err) => {
+    if (!streaming.value && !stopping.value) return
     emit('update:messages', [...props.messages, { role: 'assistant', content: `**Error:** ${err}` }])
     streamBuffer.value = ''
     streaming.value = false
+    stopping.value = false
+    activeMessagesBase.value = null
+    updateScrollState()
   })
 })
 
@@ -130,23 +158,123 @@ function send() {
     apiContent = msg
   }
 
-  emit('update:messages', [...props.messages, { role: 'user', content: msg, image: pastedImage.value, rawContent: msg }])
+  const nextMessages = [...props.messages, { role: 'user', content: msg, image: pastedImage.value, rawContent: msg }]
+  activeMessagesBase.value = nextMessages
+  emit('update:messages', nextMessages)
+  addAskHistory(msg)
   input.value = ''
   pastedImage.value = null
   streaming.value = true
+  stopping.value = false
   streamBuffer.value = ''
   window.api.sendMessage(apiContent, { ...config }, history)
+  scrollToBottom()
+}
+
+function addAskHistory(text) {
+  const ask = text.trim()
+  if (!ask) return
+  askHistory.value = [ask, ...askHistory.value.filter(item => item !== ask)].slice(0, 10)
+  askHistoryCursor.value = -1
+  askHistoryDraft.value = ''
+}
+
+function setInputFromHistory(value) {
+  input.value = value
+  nextTick(() => {
+    const el = inputEl.value
+    if (!el) return
+    el.selectionStart = el.selectionEnd = el.value.length
+  })
+}
+
+function showPreviousAsk() {
+  if (!askHistory.value.length || streaming.value) return
+  if (askHistoryCursor.value === -1) {
+    askHistoryDraft.value = input.value
+    askHistoryCursor.value = 0
+  } else {
+    askHistoryCursor.value = Math.min(askHistoryCursor.value + 1, askHistory.value.length - 1)
+  }
+  setInputFromHistory(askHistory.value[askHistoryCursor.value])
+}
+
+function showNextAsk() {
+  if (askHistoryCursor.value === -1 || streaming.value) return
+  if (askHistoryCursor.value > 0) {
+    askHistoryCursor.value -= 1
+    setInputFromHistory(askHistory.value[askHistoryCursor.value])
+  } else {
+    askHistoryCursor.value = -1
+    setInputFromHistory(askHistoryDraft.value)
+    askHistoryDraft.value = ''
+  }
+}
+
+function stop() {
+  if (!streaming.value || stopping.value) return
+  stopping.value = true
+  window.api.stopMessage()
+  finishStream()
+}
+
+function finishStream() {
+  if (!streaming.value && !stopping.value && !streamBuffer.value) return
+  const raw = streamBuffer.value
+  if (raw) {
+    const base = activeMessagesBase.value || props.messages
+    emit('update:messages', [...base, { role: 'assistant', content: parseMsg(raw).reply, rawContent: raw }])
+  }
+  streamBuffer.value = ''
+  streaming.value = false
+  stopping.value = false
+  activeMessagesBase.value = null
   scrollBottom()
 }
 
-function scrollBottom() {
+function distanceFromBottom() {
+  const el = messagesEl.value
+  if (!el) return 0
+  return el.scrollHeight - el.scrollTop - el.clientHeight
+}
+
+function isNearBottom(threshold = 80) {
+  return distanceFromBottom() < threshold
+}
+
+function updateScrollState() {
+  showScrollBottom.value = distanceFromBottom() > 120
+}
+
+function onMessagesScroll() {
+  updateScrollState()
+}
+
+function onMessagesMouseMove(e) {
+  const el = messagesEl.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const verticalGutter = el.scrollHeight > el.clientHeight && rect.right - e.clientX <= 16
+  const horizontalGutter = el.scrollWidth > el.clientWidth && rect.bottom - e.clientY <= 16
+  scrollbarHover.value = verticalGutter || horizontalGutter
+}
+
+function scrollToBottom() {
   nextTick(() => {
     const el = messagesEl.value
     if (!el) return
-    // only auto-scroll if within 80px of bottom
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) {
-      el.scrollTop = el.scrollHeight
-    }
+    el.scrollTop = el.scrollHeight
+    updateScrollState()
+  })
+}
+
+function scrollBottom() {
+  const shouldStick = isNearBottom()
+  nextTick(() => {
+    const el = messagesEl.value
+    if (!el) return
+    if (shouldStick) el.scrollTop = el.scrollHeight
+    updateScrollState()
   })
 }
 
@@ -157,7 +285,27 @@ function parseMsg(text) {
 }
 
 function renderMd(text) {
-  const html = marked.parse(text || '')
+  const saved = []
+  let t = (text || '')
+    .replace(/`{3}[\s\S]*?`{3}|`[^`\n]+`/g, m => (saved.push(m), `\x02${saved.length-1}\x03`))
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => {
+      try { return katex.renderToString(m.trim(), { displayMode: true, throwOnError: false, output: 'html' }) }
+      catch { return `$$${m}$$` }
+    })
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, m) => {
+      try { return katex.renderToString(m.trim(), { displayMode: true, throwOnError: false, output: 'html' }) }
+      catch { return `\\[${m}\\]` }
+    })
+    .replace(/\$([^$\n]+?)\$/g, (_, m) => {
+      try { return katex.renderToString(m.trim(), { throwOnError: false, output: 'html' }) }
+      catch { return `$${m}$` }
+    })
+    .replace(/\\\(([^)]+?)\\\)/g, (_, m) => {
+      try { return katex.renderToString(m.trim(), { throwOnError: false, output: 'html' }) }
+      catch { return `\\(${m}\\)` }
+    })
+    .replace(/\x02(\d+)\x03/g, (_, i) => saved[+i])
+  const html = marked.parse(t)
   return html.replace(/<pre><code([^>]*)>([\s\S]*?)<\/code><\/pre>/g, (_, attrs, code) => {
     const raw = code.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/\n$/,'')
     const b64 = btoa(unescape(encodeURIComponent(raw)))
@@ -197,7 +345,9 @@ function copyMsg(text, idx) {
 .clear-btn:hover { color: #cdd6f4; }
 .clear-icon { width: 20px; height: 20px; object-fit: contain; opacity: 0.6; }
 .clear-btn:hover .clear-icon { opacity: 1; }
-.messages { flex: 1; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.messages-wrap { flex: 1; min-height: 0; position: relative; }
+.messages { height: 100%; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.messages.scrollbar-hover { cursor: pointer; }
 .msg { display: flex; flex-direction: column; gap: 4px; max-width: 100%; }
 .msg.user .msg-content { background: #313244; border-radius: 8px; padding: 8px 12px; font-size: 13px; align-self: flex-end; white-space: pre-wrap; word-break: break-word; }
 .msg.assistant .msg-content { font-size: 13px; line-height: 1.6; word-break: break-word; }
@@ -209,8 +359,12 @@ function copyMsg(text, idx) {
 .think-content { padding: 8px; color: #6c7086; border-top: 1px solid #313244; }
 .input-row { padding: 8px; background: #181825; border-top: 1px solid #313244; display: flex; gap: 8px; }
 textarea { background: #313244; border: none; border-radius: 6px; color: #cdd6f4; padding: 8px; font-size: 13px; resize: none; outline: none; width: 100%; box-sizing: border-box; }
-.send-btn { background: #89b4fa; border: none; border-radius: 6px; color: #1e1e2e; cursor: pointer; font-weight: 600; padding: 0 14px; font-size: 13px; }
+.send-btn { min-width: 72px; background: #89b4fa; border: none; border-radius: 6px; color: #1e1e2e; cursor: pointer; font-weight: 600; padding: 0 14px; font-size: 13px; }
+.send-btn.streaming { background: #f38ba8; }
+.send-btn.stopping { opacity: 0.75; cursor: wait; }
 .send-btn:disabled { opacity: 0.4; cursor: default; }
+.scroll-bottom-btn { position: absolute; right: 18px; bottom: 12px; border: 1px solid #45475a; border-radius: 999px; background: #313244; color: #cdd6f4; box-shadow: 0 6px 16px rgba(0,0,0,0.28); cursor: pointer; font-size: 12px; font-weight: 600; padding: 6px 10px; }
+.scroll-bottom-btn:hover { background: #45475a; }
 .loading-dots { display: flex; gap: 5px; padding: 6px 0; }
 .loading-dots span { width: 7px; height: 7px; border-radius: 50%; background: #89b4fa; animation: bounce 1.2s infinite; }
 .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
